@@ -195,7 +195,7 @@ def main():
 	#if Debug: print ("urlalias keys: ", list(urlalias.keys()))
 	#if Debug: print ("urlaliases: ", dict(urlalias))
 	
-	exit()		
+	#exit()		
 #---			
 
 	# Evaluate urls with multi-processor.Process or Pool method
