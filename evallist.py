@@ -10,6 +10,7 @@
 # Revision History:	20190506 - Initial release
 #					20190512 - Added psutil functions to properly kill processes (parent and children) if timed-out
 #							   Added -i --interval option for process (not pool) status updates 
+#					20190616 - Added support to read list of urls from cli or file
 #
 # Known issues:
 #	- KeyboardInterrupts don't always exit cleanly
@@ -23,8 +24,9 @@
 #
 # Import various functions using differnt options
 # Nice reference: https://docs.python-guide.org/writing/structure/#modules
-import sys, os, argparse, datetime, time, subprocess, psutil
+import sys, os, argparse, datetime, time, subprocess, psutil, glob, re
 from collections import ChainMap
+from pathlib import Path
 import multiprocessing as mp
 import multiprocessing.dummy as mpthread
 from multiprocessing import Pool
@@ -34,17 +36,20 @@ from multiprocessing.dummy import Pool as ThreadPool
 # Set initial values
 Start=time.time()
 defaults = {'debug':False, 'timeout':100, 'method':'ThreadPool_async', 
-	'processors':'4','cmd':'showargs-random.bat','interval':10} 
+	'processors':'4','cmd':'showargs-random.bat','interval':10, 'list':'urllist.txt'} 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-c', '--cmd', help='Default: ' +defaults['cmd'])
 parser.add_argument('-d', '--debug', action='store_true', help='Show debug info')
 parser.add_argument('-i', '--interval', help='Default process status interval: ' +str(defaults['interval']) +'(secs)' )
+#parser.add_argument('-l', '--list', help='Default list(s) to evaluate: ' +str(defaults['list']), action='append')
+parser.add_argument('-l', '--list', help='Default list file(s) to evaluate: ' +str(defaults['list']))
 parser.add_argument('-m', '--method',  choices=['Process','ThreadProcess','Pool','ThreadPool', 'Pool_async', 
 	'ThreadPool_async', 'NoPool'], help='Default: ' +defaults['method'])
 parser.add_argument('-p', '--processors', help='Default: ' +defaults['processors'])
 parser.add_argument('-t', '--timeout', help='Default: ' +str(defaults['timeout']) +'(secs)')
 args = parser.parse_args()
+
 cli_args = {k:v for k, v in vars(args).items() if v}
 #d = ChainMap(cli_args, os.environ, defaults)
 opts = ChainMap(cli_args, defaults)
@@ -56,6 +61,8 @@ Interval = int(opts['interval'])
 Method = opts['method']
 Processors = int(opts['processors'])
 Timeout = int(opts['timeout'])
+
+urlalias={}
 
 # Get the number of processors available (not supported with multiprocessing.dummy)
 #num_processes = mp.cpu_count()
@@ -102,11 +109,13 @@ def work(item, workoptions):
 		if Debug: print ("Splitting Cmd: ",Cmd)
 		items = Cmd.split()
 		NewCmd = items[0]
-		(cmdopts) = (items[1:len(items)])
+		cmdopts = items[1:len(items)]
 		
+	#if Debug: print ("***urlalias: ", dict(urlalias))
+	
 	allargs = str(item)
-	allargs = " ".join([allargs,str(os.getppid())])
-	allargs = " ".join([allargs,str(os.getpid())])
+	allargs = "--ppid ".join([allargs,str(os.getppid())])
+	allargs = "--pid ".join([allargs,str(os.getpid())])
 	if Debug: print ('Subprocess Cmd: ',NewCmd,*cmdopts,allargs)
 	if not cmdopts: subp = subprocess.Popen([NewCmd,allargs])
 	if cmdopts: subp = subprocess.Popen([NewCmd,*cmdopts,allargs])
@@ -133,6 +142,8 @@ def work(item, workoptions):
 # End of work
 	
 def main():
+	urls = []
+	i = 0
 	if Debug: 
 		for k, v in sorted(opts.items()):
 			print (k, '-->', v)
@@ -141,24 +152,52 @@ def main():
 	print ("Start time: ", now())
 	start_time = now() #Used for timing
 	Start = time.time()	 #Used for periodic checks
+	
+	# Get list of URLs.  
+	if glob.glob(opts['list']):  # check to see if they are files
+		for list_entry in glob.glob(opts['list']):
+			if Debug: print ("list_entry: ",list_entry)
+		
+			# Check to see if it's a cmds file.  If it is, parse it and run commands.
+			listfile = Path(list_entry)
+			if listfile.is_file(): 
+				if Debug: print ("Using file:", listfile)
+				listlines =[]
+				with open(listfile) as lfile:
+					#listlines = lfile.readlines()
+					for line in lfile:
+						if re.search(r"^\s*[#!]+.*$", line): continue
+						l=re.findall(r"^\s*(.*)$", line) 
+						#l=re.findall(r"^\s*([a-zA-Z0-9-:/. ]+)#*.*$", line) # Ingore past # char
+						if l: 
+							if Debug: print ("Adding entry:", l[0])
+							listlines.append(l[0])
+				# Remove whitespace characters like `\n` at the end of each line1
+				listlines = [x.strip() for x in listlines] 
+				if Debug: print ("URLs:  ", listlines)
+				urls = urls + listlines
+			# End of using file entries
+	else:
+		if Debug: print ("Not a file, so using -l | --list values")
+		urls = re.compile('[ ,]').split(opts['list']) #split -l argument on spaces or commas
+		
+	print ("All URLs: ", urls)
+	
+	for u in urls:
+		#if Debug: print (u)
+		#urlalias[u]="Alias-"+u
+		#if Debug: print ("Entries added:\n",u,urlalias[u])
+		#print ("re: ",u.r"^\w*")
 
-	# Define test URLs 
-	urls = [
-	'http://www.startpage.com This has other arguments',
-	'http://www.python.org',
-	'http://www.python.org/about/',
-	'http://www.onlamp.com/pub/a/python/2003/04/17/metaclasses.html',
-	'http://www.python.org/doc/',
-	'http://www.python.org/download/',
-	'http://www.python.org/getit/',
-	'http://www.python.org/community/',
-	'https://wiki.python.org/moin/',
-	'http://planet.python.org/',
-	'https://wiki.python.org/moin/LocalUserGroups',
-	'http://www.python.org/psf/',
-	'http://docs.python.org/devguide/',
-	'http://www.python.org/community/awards/'
-	]
+		u = u + " --alias " + u.replace(":", "-").replace("/", "_")
+		if Debug: print ("Entry updated:\n", u)
+
+	#if Debug: print ("urlalias keys: ", list(urlalias.keys()))
+	#if Debug: print ("urlaliases: ", dict(urlalias))
+	
+	exit()		
+#---			
+
 	# Evaluate urls with multi-processor.Process or Pool method
 	if Method == 'Process' or Method == 'ThreadProcess':
 		EvalList_Process(urls)
@@ -295,5 +334,22 @@ if __name__ == '__main__':
 	main()	
 	
 ("""
+	# Define test URLs 
+	urls = [
+	'http://www.startpage.com This has other arguments',
+	'http://www.python.org',
+	'http://www.python.org/about/',
+	'http://www.onlamp.com/pub/a/python/2003/04/17/metaclasses.html',
+	'http://www.python.org/doc/',
+	'http://www.python.org/download/',
+	'http://www.python.org/getit/',
+	'http://www.python.org/community/',
+	'https://wiki.python.org/moin/',
+	'http://planet.python.org/',
+	'https://wiki.python.org/moin/LocalUserGroups',
+	'http://www.python.org/psf/',
+	'http://docs.python.org/devguide/',
+	'http://www.python.org/community/awards/'
 	# etc..
+	]
 """)
